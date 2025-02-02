@@ -1,0 +1,207 @@
+import React, { useState } from "react";
+import axios from "axios";
+import { Line } from "react-chartjs-2";
+
+// 📌 **Chart.js bileşenlerini doğru kaydet**
+import {
+  Chart as ChartJS,
+  CategoryScale,
+  LinearScale,
+  PointElement,
+  LineElement,
+  Title,
+  Tooltip,
+  Legend
+} from "chart.js";
+
+// Chart.js'nin bileşenlerini GLOBAL olarak kaydediyoruz
+ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Title, Tooltip, Legend);
+
+
+/**
+ * Satırın InfluxDB CSV başlığı olup olmadığını kontrol eder.
+ */
+function isHeaderOrComment(line) {
+  if (!line || !line.trim()) return true;
+  if (line.startsWith("#")) return true;
+  if (line.includes("result,table,_start,_stop,_time,_value")) return true;
+  return false;
+}
+
+/**
+ * _result,0 arasındaki JSON'u çeker.
+ */
+function extractJson(line) {
+  const parts = line.split(",_result,0,");
+  if (parts.length < 2) {
+    return null;
+  }
+
+  let jsonCandidate = parts[1].trim();
+  if (jsonCandidate.startsWith('"') && jsonCandidate.endsWith('"')) {
+    jsonCandidate = jsonCandidate.slice(1, -1);
+  }
+  jsonCandidate = jsonCandidate.replace(/""/g, '"');
+
+  try {
+    return JSON.parse(jsonCandidate);
+  } catch (err) {
+    console.error("JSON parse error:", err, "for line:", jsonCandidate);
+    return null;
+  }
+}
+
+const InfluxDataFetcher = () => {
+  const [measurement, setMeasurement] = useState("mqtt_data");
+  const [timeValue, setTimeValue] = useState(3);
+  const [timeUnit, setTimeUnit] = useState("mo");
+
+  const [csvLines, setCsvLines] = useState([]);
+  const [parsedRecords, setParsedRecords] = useState([]);
+  const [usr1FlowRates, setUsr1FlowRates] = useState([]);
+
+  async function fetchData() {
+    try {
+      const response = await axios.get("http://localhost:8080/api/data", {
+        params: { measurement, timeValue, timeUnit },
+      });
+      const lines = response.data;
+      setCsvLines(lines);
+
+      const records = lines
+        .filter((line) => !isHeaderOrComment(line))
+        .map((line) => extractJson(line))
+        .filter((obj) => obj !== null);
+
+      setParsedRecords(records);
+
+      // usr1_flowRate değerlerini array olarak çek
+      const flowRates = records.map(
+        (record) => record?.uplink_message?.decoded_payload?.usr1_flowRate || 0
+      );
+      console.log("📊 usr1FlowRates:", flowRates);
+      setUsr1FlowRates(flowRates);
+    } catch (error) {
+      console.error("Error fetching CSV from backend:", error);
+    }
+  }
+
+  // 📊 Chart.js için veriyi oluştur
+  const chartData = {
+    labels: usr1FlowRates.map((_, index) => `Data ${index + 1}`),
+    datasets: [
+      {
+        label: "usr1_flowRate",
+        data: usr1FlowRates,
+        borderColor: "red", // Çizgi rengini kırmızı yap
+        backgroundColor: "rgba(255, 0, 0, 0.2)", // Şeffaf kırmızı arkaplan
+        borderWidth: 2, // Çizgi kalınlığını artır
+        pointRadius: 4, // Veri noktalarını belirgin yap
+        pointBackgroundColor: "red", // Veri noktalarını kırmızı yap
+        tension: 0.4, // Çizgiyi daha pürüzsüz hale getir
+      },
+    ],
+  };
+  
+  const chartOptions = {
+    responsive: true,
+    maintainAspectRatio: false,
+    scales: {
+      y: {
+        beginAtZero: false, // 0'dan başlamasını zorunlu kılma, veri aralığını gör
+        grid: {
+          color: "rgba(255, 0, 0, 0.2)", // Y ekseni çizgilerini hafif kırmızı yap
+        },
+        ticks: {
+          color: "red", // Y ekseni etiketlerini kırmızı yap
+        },
+      },
+      x: {
+        grid: {
+          color: "rgba(255, 0, 0, 0.2)", // X ekseni çizgilerini hafif kırmızı yap
+        },
+        ticks: {
+          color: "red", // X ekseni etiketlerini kırmızı yap
+        },
+      },
+    },
+    plugins: {
+      legend: {
+        labels: {
+          color: "red", // Legend (etiket) yazısını kırmızı yap
+        },
+      },
+    },
+  };
+  
+
+  return (
+    <div style={{ padding: "1rem" }}>
+      <h2>InfluxDataFetcher</h2>
+
+      {/* --- Input Form --- */}
+      <div style={{ marginBottom: "1rem" }}>
+        <label>Measurement:</label>
+        <input
+          value={measurement}
+          onChange={(e) => setMeasurement(e.target.value)}
+          style={{ margin: "0 1rem 0 0.5rem" }}
+        />
+        <label>Value:</label>
+        <select
+          value={timeValue}
+          onChange={(e) => setTimeValue(Number(e.target.value))}
+          style={{ margin: "0 1rem 0 0.5rem" }}
+        >
+          {Array.from({ length: 12 }, (_, i) => i + 1).map((val) => (
+            <option key={val} value={val}>
+              {val}
+            </option>
+          ))}
+        </select>
+        <label>Unit:</label>
+        <select
+          value={timeUnit}
+          onChange={(e) => setTimeUnit(e.target.value)}
+          style={{ margin: "0 1rem 0 0.5rem" }}
+        >
+          <option value="s">Seconds</option>
+          <option value="m">Minutes</option>
+          <option value="h">Hours</option>
+          <option value="d">Days</option>
+          <option value="mo">Months</option>
+        </select>
+
+        <button onClick={fetchData}>Fetch Data</button>
+      </div>
+
+      {/* --- Show raw lines --- */}
+      <h3>Raw CSV Lines</h3>
+      <div style={{ maxHeight: 200, overflowY: "auto", border: "1px solid #ccc", padding: 8 }}>
+        {csvLines.map((line, idx) => (
+          <div key={idx}>{line}</div>
+        ))}
+      </div>
+
+      {/* --- Show parsed JSON --- */}
+      <h3>Parsed JSON</h3>
+      {parsedRecords.length === 0 ? (
+        <p>No parsed records found.</p>
+      ) : (
+        parsedRecords.map((item, idx) => (
+          <div key={idx} style={{ background: "#f4f4f4", padding: "0.5rem", marginBottom: "10px" }}>
+            <p><strong>Result:</strong> {JSON.stringify(item, null, 2)}</p>
+          </div>
+        ))
+      )}
+
+      {/* 📈 Çizgi Grafiği */}
+      <h3>usr1_flowRate Line Chart</h3>
+      <div style={{ width: "100%", maxWidth: "600px", height: "300px" }}>
+        <Line data={chartData} options={{ responsive: true, maintainAspectRatio: false }} />
+      </div>
+    </div>
+  );
+};
+
+export default InfluxDataFetcher;
